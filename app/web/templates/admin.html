@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% set active = '' %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<div class="card" id="login-card">
+  <h2>🛠️ Admin</h2>
+  <form id="token-form" style="display:flex; gap:0.6rem; align-items:flex-end">
+    <div style="flex:1">
+      <label for="token">Admin token (ADMIN_TOKEN from .env)</label>
+      <input id="token" type="password" autocomplete="off">
+    </div>
+    <button type="submit" style="margin-top:0">Unlock</button>
+  </form>
+  <div id="login-status" class="status" hidden></div>
+</div>
+
+<div class="card" id="stats-card" hidden>
+  <h2>📊 Instance</h2>
+  <div id="stats"></div>
+</div>
+
+<div class="card" id="interval-card" hidden>
+  <h2>⏱️ Check frequency</h2>
+  <p class="hint">How often each monitored expediente is re-checked. This is the
+    base interval — when the instance is busy it's automatically stretched to
+    protect the shared queue (the government site is rate-sensitive).</p>
+  <div style="display:flex; gap:0.6rem; align-items:flex-end">
+    <div>
+      <label for="interval-select">Base interval</label>
+      <select id="interval-select" style="padding:0.55rem 0.7rem; border:1px solid var(--border); border-radius:7px; background:var(--bg); color:var(--text)"></select>
+    </div>
+    <button class="small" id="btn-save-interval" style="margin:0">Save</button>
+  </div>
+  <div id="interval-effective" class="hint" style="margin-top:0.6rem"></div>
+  <div id="interval-status" class="status" hidden></div>
+</div>
+
+<div class="card" id="invite-card" hidden>
+  <h2>🎟️ Invitations</h2>
+  <label style="display:flex; align-items:center; gap:0.6rem; cursor:pointer">
+    <input type="checkbox" id="invite-toggle" style="width:auto">
+    <span>Invite-only mode — require a code to create a monitor</span>
+  </label>
+  <div style="display:flex; gap:0.6rem; align-items:flex-end; margin-top:1rem">
+    <div>
+      <label for="invite-count">Generate codes</label>
+      <input id="invite-count" type="number" min="1" max="50" value="1" style="width:6rem">
+    </div>
+    <button class="small" id="btn-gen-invites" style="margin:0">Generate</button>
+  </div>
+  <div id="invite-status" class="status" hidden></div>
+  <div id="invite-list" style="margin-top:1rem"></div>
+</div>
+
+<div class="card" id="list-card" hidden>
+  <h2>All monitors</h2>
+  <div id="monitor-list"><p class="hint">Loading…</p></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let TOKEN = sessionStorage.getItem('adminToken') || '';
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(path, opts = {}) {
+  opts.headers = { ...(opts.headers || {}), 'X-Admin-Token': TOKEN };
+  const r = await fetch(path, opts);
+  const data = r.status === 204 ? {} : await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Request failed');
+  return data;
+}
+
+async function unlock() {
+  const status = document.getElementById('login-status');
+  try {
+    const monitors = await api('/api/monitors');
+    sessionStorage.setItem('adminToken', TOKEN);
+    document.getElementById('login-card').hidden = true;
+    document.getElementById('stats-card').hidden = false;
+    document.getElementById('interval-card').hidden = false;
+    document.getElementById('invite-card').hidden = false;
+    document.getElementById('list-card').hidden = false;
+    render(monitors);
+    renderStats();
+    renderInterval();
+    renderInvites();
+  } catch (e) {
+    status.hidden = false;
+    status.className = 'status error';
+    status.textContent = '❌ ' + e.message;
+    sessionStorage.removeItem('adminToken');
+  }
+}
+
+async function renderStats() {
+  const h = await (await fetch('/healthz')).json();
+  document.getElementById('stats').innerHTML = `
+    <table class="result"><tbody>
+      <tr><td>Monitors (active/total)</td><td>${h.active_monitors} / ${h.monitors}</td></tr>
+      <tr><td>Effective re-check interval</td><td>~${Math.round(h.effective_interval_seconds / 60)} min</td></tr>
+      <tr><td>Telegram bot</td><td>${h.telegram ? '✅ polling' : '❌ not connected'}</td></tr>
+    </tbody></table>`;
+}
+
+function render(monitors) {
+  const listEl = document.getElementById('monitor-list');
+  if (!monitors.length) {
+    listEl.innerHTML = '<p class="hint">No monitors.</p>';
+    return;
+  }
+  listEl.innerHTML = monitors.map(m => {
+    const state = m.last_state || {};
+    const lastChecked = m.last_checked_at
+      ? new Date(m.last_checked_at).toLocaleString() : 'never';
+    return `<div class="monitor">
+      <div>
+        <div><strong>${esc(m.label || m.expediente_id)}</strong>
+          <span class="badge">🔔 ${m.subscribers}</span>
+          ${m.paused ? '<span class="badge">⏸️ paused</span>' : ''}
+          ${m.check_queued ? '<span class="badge">check queued</span>' : ''}
+          ${m.resolved_at ? '<span class="badge">resolved</span>' : ''}</div>
+        <div class="meta">Expediente <code>${esc(m.expediente_id)}</code>
+          · presented ${esc(m.fecha_presentacion)} · created ${new Date(m.created_at).toLocaleDateString()}</div>
+        <div style="margin-top:0.3rem">${state.estado
+          ? `<span class="badge estado">${esc(state.estado)}</span>` : '<span class="hint">no result yet</span>'}
+          ${state.fecha_resolucion ? ' · Resolución: ' + esc(state.fecha_resolucion) : ''}</div>
+        <div class="meta">Last checked: ${lastChecked}</div>
+        ${m.last_error ? `<div class="meta error">Last attempt: ${esc(m.last_error)}</div>` : ''}
+      </div>
+      <div style="display:flex; flex-direction:column; gap:0.4rem">
+        <a class="small secondary" style="text-align:center; text-decoration:none; padding:0.3rem 0.7rem; border:1px solid var(--accent); border-radius:7px; color:var(--accent); font-size:0.82rem"
+           href="/m/${esc(m.manage_token)}" target="_blank">Manage page</a>
+        <button class="small secondary" data-action="check" data-id="${m.id}"
+          ${m.check_queued ? 'disabled' : ''}>Check now</button>
+        <button class="small secondary" data-action="delete" data-id="${m.id}"
+          data-label="${esc(m.label || m.expediente_id)}">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function fmtSeconds(s) {
+  if (s % 86400 === 0) { const d = s / 86400; return d + ' day' + (d > 1 ? 's' : ''); }
+  if (s % 3600 === 0) { const h = s / 3600; return h + ' hour' + (h > 1 ? 's' : ''); }
+  return Math.round(s / 60) + ' min';
+}
+
+async function renderInterval() {
+  const data = await api('/api/admin/settings');
+  const sel = document.getElementById('interval-select');
+  const cur = data.base_interval_seconds;
+  const opts = [...data.presets];
+  if (!opts.some(p => p.seconds === cur)) {
+    opts.push({ label: fmtSeconds(cur) + ' (current)', seconds: cur });
+    opts.sort((a, b) => a.seconds - b.seconds);
+  }
+  sel.innerHTML = opts.map(p =>
+    `<option value="${p.seconds}" ${p.seconds === cur ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
+  const eff = data.effective_interval_seconds;
+  document.getElementById('interval-effective').textContent =
+    eff === cur
+      ? `Current effective interval: ${fmtSeconds(eff)}.`
+      : `Current effective interval: ${fmtSeconds(eff)} (stretched from the ${fmtSeconds(cur)} base because the instance is busy).`;
+}
+
+document.getElementById('btn-save-interval').addEventListener('click', async () => {
+  const seconds = parseInt(document.getElementById('interval-select').value, 10);
+  const status = document.getElementById('interval-status');
+  try {
+    await api('/api/admin/monitor-interval', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seconds }),
+    });
+    status.hidden = false;
+    status.className = 'status ok';
+    status.textContent = '✅ Check frequency updated.';
+    renderInterval();
+    renderStats();
+  } catch (err) {
+    status.hidden = false;
+    status.className = 'status error';
+    status.textContent = '❌ ' + err.message;
+  }
+});
+
+async function renderInvites() {
+  const data = await api('/api/admin/invites');
+  document.getElementById('invite-toggle').checked = data.invite_only;
+  const c = data.counts;
+  const listEl = document.getElementById('invite-list');
+  const rows = data.codes.map(code => {
+    const used = !!code.used_at;
+    return `<div class="monitor" style="padding:0.5rem 0">
+      <div>
+        <code style="font-size:1.05rem; letter-spacing:1px">${esc(code.code)}</code>
+        ${used ? `<span class="badge">used ${new Date(code.used_at).toLocaleDateString()}${code.used_by ? ' · ' + esc(code.used_by) : ''}</span>`
+               : '<span class="badge estado">available</span>'}
+      </div>
+      <button class="small secondary" data-invite="${esc(code.code)}">Delete</button>
+    </div>`;
+  }).join('');
+  listEl.innerHTML =
+    `<p class="hint">${c.unused} available · ${c.used} used · ${c.total} total</p>` +
+    (rows || '<p class="hint">No codes yet — generate some above.</p>');
+}
+
+document.getElementById('invite-toggle').addEventListener('change', async (e) => {
+  try {
+    await api('/api/admin/invite-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: e.target.checked }),
+    });
+  } catch (err) { alert(err.message); e.target.checked = !e.target.checked; }
+});
+
+document.getElementById('btn-gen-invites').addEventListener('click', async () => {
+  const count = parseInt(document.getElementById('invite-count').value, 10) || 1;
+  const status = document.getElementById('invite-status');
+  try {
+    const data = await api(`/api/admin/invites?count=${count}`, { method: 'POST' });
+    status.hidden = false;
+    status.className = 'status ok';
+    status.textContent = '✅ Generated: ' + data.created.join(', ');
+    renderInvites();
+  } catch (err) {
+    status.hidden = false;
+    status.className = 'status error';
+    status.textContent = '❌ ' + err.message;
+  }
+});
+
+document.getElementById('invite-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-invite]');
+  if (!btn) return;
+  if (!confirm(`Delete invite code ${btn.dataset.invite}?`)) return;
+  try { await api(`/api/admin/invites/${encodeURIComponent(btn.dataset.invite)}`, { method: 'DELETE' }); }
+  catch (err) { alert(err.message); }
+  renderInvites();
+});
+
+async function refresh() {
+  if (!TOKEN || document.getElementById('list-card').hidden) return;
+  try { render(await api('/api/monitors')); renderStats(); renderInvites(); } catch {}
+}
+
+document.getElementById('token-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  TOKEN = document.getElementById('token').value.trim();
+  unlock();
+});
+
+document.getElementById('monitor-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  try {
+    if (btn.dataset.action === 'check') {
+      await api(`/api/monitors/${btn.dataset.id}/check-now`, { method: 'POST' });
+    } else if (btn.dataset.action === 'delete') {
+      if (!confirm(`Delete "${btn.dataset.label}" and all its subscriptions?`)) return;
+      await api(`/api/monitors/${btn.dataset.id}`, { method: 'DELETE' });
+    }
+  } catch (err) { alert(err.message); }
+  refresh();
+});
+
+if (TOKEN) unlock();
+setInterval(refresh, 15000);
+</script>
+{% endblock %}

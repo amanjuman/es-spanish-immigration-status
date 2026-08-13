@@ -1,0 +1,17 @@
+services:
+  notifier:
+    build: .
+    container_name: es-spanish-immigration-status
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+    ports:
+      # Bound to localhost — put a reverse proxy with auth in front if you
+      # want to expose it beyond this machine.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    # Chromium needs a bit more shared memory than Docker's 64MB default.
+    shm_size: 512m

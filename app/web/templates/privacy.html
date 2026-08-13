@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% set active = '' %}
+{% block title %}Privacy{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Privacy</h2>
+  <p>This is a small, self-hosted, unofficial tool. Here is exactly what it
+    stores and why:</p>
+  <ul>
+    <li><b>For one-off checks:</b> the expediente number, presentation date
+      and birth year you enter are used to query the government portal and
+      are kept only briefly in memory (a short result cache, ~15 minutes);
+      nothing is written to the database.</li>
+    <li><b>For monitors:</b> the same three fields plus an optional label are
+      stored so the background checker can re-check them. The last known
+      status and a short check history are kept alongside.</li>
+    <li><b>For alerts:</b> the Telegram chat id of each subscriber (never a
+      phone number) is stored so alerts can be delivered.</li>
+  </ul>
+  <p><b>Who can see your data:</b> only whoever holds your monitor's secret
+    management link, subscribers you invite via activation links, and the
+    instance operator (who has server access). Other visitors cannot list or
+    view monitors{% if public_mode %} on this instance{% endif %}.</p>
+  <p><b>Deletion:</b> delete your monitor at any time from its management
+    page — this removes the expediente data, its history and all
+    subscriptions immediately. Monitors are also purged automatically a while
+    after a final resolution{% if public_mode %}, and unactivated monitors are
+    removed after a few days{% endif %}. Check history is kept at most 90 days.</p>
+  <p><b>Third parties:</b> status data comes from the official portal
+    (infoext2.delegaciondelgobierno.gob.es). Alerts go through the Telegram
+    Bot API.{% if turnstile_site_key %} Form submissions are verified by
+    Cloudflare Turnstile.{% endif %} No analytics, no ads, no data sales.</p>
+</div>
+{% endblock %}

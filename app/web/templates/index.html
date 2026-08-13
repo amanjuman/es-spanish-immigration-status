@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% set active = 'check' %}
+{% block content %}
+<div class="card">
+  <h2>Check your expediente status</h2>
+  <p class="hint">
+    Enter the details exactly as they appear on your application receipt.
+    A check takes 1–3 minutes: the app opens the government site, solves its
+    captcha and reads the result for you.
+  </p>
+  <form id="check-form">
+    <label for="expediente">Expediente number</label>
+    <input id="expediente" name="expediente_id" placeholder="E2820260…" required
+           autocomplete="off" spellcheck="false">
+    <label for="fecha">Fecha de presentación (date the application was filed)</label>
+    <input id="fecha" name="fecha_presentacion" type="date" required>
+    <label for="anio">Año de nacimiento (applicant's birth year)</label>
+    <input id="anio" name="anio_nacimiento" type="number" min="1900" max="2026"
+           placeholder="1990" required>
+    {% if turnstile_site_key %}
+    <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" style="margin-top:1rem"></div>
+    {% endif %}
+    <button id="submit-btn" type="submit">Check status</button>
+  </form>
+  <div id="status" class="status" hidden></div>
+  <div id="result" hidden>
+    <table class="result"><tbody id="result-body"></tbody></table>
+    <p class="hint">Want automatic checks with a Telegram alert when this
+      changes? <a href="/monitors" id="monitor-link">Add it as a monitor</a>.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form = document.getElementById('check-form');
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+const resultBody = document.getElementById('result-body');
+const submitBtn = document.getElementById('submit-btn');
+
+function toDDMMYYYY(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+function showStatus(html, cls = '') {
+  statusEl.hidden = false;
+  statusEl.className = 'status ' + cls;
+  statusEl.innerHTML = html;
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  resultEl.hidden = true;
+  submitBtn.disabled = true;
+  showStatus('<span class="spinner"></span>Submitting…');
+
+  const payload = {
+    expediente_id: form.expediente_id.value.trim(),
+    fecha_presentacion: toDDMMYYYY(form.fecha_presentacion.value),
+    anio_nacimiento: String(form.anio_nacimiento.value).trim(),
+    turnstile_token: turnstileToken(form),
+  };
+  sessionStorage.setItem('lastCheck', JSON.stringify(
+    { ...payload, turnstile_token: undefined }));
+
+  try {
+    const resp = await fetch('/api/checks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+    turnstileReset();
+    if (data.status === 'done' && data.cached) {
+      const mins = Math.max(1, Math.round((Date.now() - new Date(data.checked_at)) / 60000));
+      showStatus(`✅ Result from a check ${mins} minute(s) ago (cached to spare the government site).`, 'ok');
+      renderResult(data.fields);
+      submitBtn.disabled = false;
+      return;
+    }
+    poll(data.id);
+  } catch (err) {
+    showStatus('❌ ' + err.message, 'error');
+    submitBtn.disabled = false;
+  }
+});
+
+async function poll(jobId) {
+  try {
+    const resp = await fetch('/api/checks/' + jobId);
+    const job = await resp.json();
+    if (!resp.ok) throw new Error(job.detail || 'Polling failed');
+
+    if (job.status === 'done') {
+      showStatus('✅ Check completed.', 'ok');
+      renderResult(job.fields);
+      submitBtn.disabled = false;
+      return;
+    }
+    if (job.status === 'error') {
+      showStatus('❌ ' + (job.error || 'Check failed.') +
+        ' <button class="small secondary" onclick="location.reload()">Try again</button>', 'error');
+      submitBtn.disabled = false;
+      return;
+    }
+    let msg = job.progress || 'Working…';
+    if (job.queue_position > 1) msg = `In queue (position ${job.queue_position})…`;
+    showStatus('<span class="spinner"></span>' + msg);
+    setTimeout(() => poll(jobId), 2000);
+  } catch (err) {
+    showStatus('❌ ' + err.message, 'error');
+    submitBtn.disabled = false;
+  }
+}
+
+function renderResult(fields) {
+  resultBody.innerHTML = '';
+  const preferred = ['N.I.E', 'Estado de Resolución', 'Fecha de Resolución'];
+  const keys = [...preferred.filter(k => k in fields),
+                ...Object.keys(fields).filter(k => !preferred.includes(k))];
+  for (const key of keys) {
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td');
+    const td2 = document.createElement('td');
+    td1.textContent = key;
+    td2.textContent = fields[key] || '—';
+    if (key === 'Estado de Resolución' && fields[key]) {
+      td2.innerHTML = '';
+      const badge = document.createElement('span');
+      badge.className = 'badge estado';
+      badge.textContent = fields[key];
+      td2.appendChild(badge);
+    }
+    tr.append(td1, td2);
+    resultBody.appendChild(tr);
+  }
+  resultEl.hidden = false;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% set active = 'monitors' %}
+{% block content %}
+<div class="card">
+  <h2>Add a monitor</h2>
+  <p class="hint">
+    Monitored expedientes are re-checked automatically in the background.
+    After adding one, you'll get a Telegram activation link — anyone who opens
+    it (you, your partner…) receives an alert the moment the N.I.E.,
+    Estado de Resolución or Fecha de Resolución changes.
+  </p>
+  <form id="monitor-form">
+    <label for="label">Label (who is this for?)</label>
+    <input id="label" name="label" placeholder="e.g. Maria" maxlength="60">
+    <label for="expediente">Expediente number</label>
+    <input id="expediente" name="expediente_id" placeholder="E2820260…" required
+           autocomplete="off" spellcheck="false">
+    <label for="fecha">Fecha de presentación</label>
+    <input id="fecha" name="fecha_presentacion" type="date" required>
+    <label for="anio">Año de nacimiento</label>
+    <input id="anio" name="anio_nacimiento" type="number" min="1900" max="2026" required>
+    {% if invite_only %}
+    <label for="invite">Invitation code</label>
+    <input id="invite" name="invite_code" placeholder="Enter your invite code" required
+           autocomplete="off" spellcheck="false" style="text-transform:uppercase">
+    <p class="hint">This instance is invite-only — ask the operator for a
+      one-time code.</p>
+    {% endif %}
+    {% if turnstile_site_key %}
+    <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" style="margin-top:1rem"></div>
+    {% endif %}
+    <button type="submit">Add monitor</button>
+  </form>
+  <div id="form-status" class="status" hidden></div>
+</div>
+
+<div class="card" id="manage-card" hidden>
+  <h2>🔑 Your management link — save it now!</h2>
+  <p><a id="manage-link" href="#" style="font-weight:600; word-break:break-all"></a></p>
+  <p class="hint">This secret link is the <b>only</b> way to manage this
+    monitor (pause it, add subscribers, delete it). It is shown once here —
+    bookmark it. It will also be sent to you in Telegram when you activate
+    alerts below.</p>
+</div>
+
+<div class="card" id="activation-card" hidden>
+  <h2>📲 Activate Telegram alerts</h2>
+  <p id="activation-intro" class="hint"></p>
+  <p style="text-align:center; margin: 1rem 0">
+    <a id="activation-link" href="#" target="_blank" rel="noopener">
+      <img id="activation-qr" alt="Telegram activation QR" width="180" height="180"
+           style="display:block; margin:0 auto 0.8rem; border-radius:8px; background:#fff; padding:6px">
+    </a>
+    <a id="activation-link-text" href="#" target="_blank" rel="noopener"
+       style="font-size:1.05rem; font-weight:600"></a>
+  </p>
+  <p class="hint">Open the link (or scan the QR from another device) and press
+    <b>Start</b> in Telegram. The link works once and expires in 24&nbsp;hours —
+    you can generate a new one anytime with the “Telegram link” button on a
+    monitor. The bot will reply with a <b>cancellation code</b>; alerts can be
+    stopped either by sending <code>/stop</code> to the bot or entering that
+    code below.</p>
+</div>
+
+{% if not public_mode %}
+<div class="card">
+  <h2>Monitored expedientes</h2>
+  <div id="monitor-list"><p class="hint">Loading…</p></div>
+</div>
+{% else %}
+<div class="card">
+  <h2>Already have a monitor?</h2>
+  <p class="hint">Open your secret management link (<code>/m/…</code>) to see
+    its status, pause it, add subscribers or delete it. Lost the link? It was
+    sent to your Telegram when you activated alerts. Subscriptions can always
+    be cancelled below or by sending <code>/stop</code> to the bot.</p>
+</div>
+{% endif %}
+
+<div class="card" id="cancel-card">
+  <h2>Cancel alerts by code</h2>
+  <p class="hint">Each subscriber gets a personal cancellation code from the
+    bot (also shown at the bottom of every alert). Enter it here to stop those
+    alerts — for example for someone who lost access to the bot chat.</p>
+  <form id="cancel-form" style="display:flex; gap:0.6rem; align-items:flex-end">
+    <div style="flex:1">
+      <label for="cancel-code">Cancellation code</label>
+      <input id="cancel-code" placeholder="e.g. X4T9KM" maxlength="12"
+             autocomplete="off" spellcheck="false" style="text-transform:uppercase">
+    </div>
+    <button type="submit" style="margin-top:0">Cancel alerts</button>
+  </form>
+  <div id="cancel-status" class="status" hidden></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PUBLIC_MODE = {{ public_mode | tojson }};
+const listEl = document.getElementById('monitor-list');
+const form = document.getElementById('monitor-form');
+const formStatus = document.getElementById('form-status');
+let telegramEnabled = false;
+
+function toDDMMYYYY(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function showActivation(link, label) {
+  const card = document.getElementById('activation-card');
+  document.getElementById('activation-intro').textContent =
+    `Alerts for “${label}” — share this with everyone who should be notified` +
+    ` (generate a new link per person).`;
+  document.getElementById('activation-link').href = link.deep_link;
+  document.getElementById('activation-link-text').href = link.deep_link;
+  document.getElementById('activation-link-text').textContent = link.deep_link;
+  document.getElementById('activation-qr').src =
+    '/api/telegram/qr.png?code=' + encodeURIComponent(link.code);
+  card.hidden = false;
+  card.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function refresh() {
+  if (PUBLIC_MODE || !listEl) return;
+  const resp = await fetch('/api/monitors');
+  const monitors = await resp.json();
+  if (!monitors.length) {
+    listEl.innerHTML = '<p class="hint">No monitors yet.</p>';
+    return;
+  }
+  listEl.innerHTML = monitors.map(m => {
+    const state = m.last_state || {};
+    const lastChecked = m.last_checked_at
+      ? new Date(m.last_checked_at).toLocaleString() : 'never';
+    const stateLine = m.last_state
+      ? `<span class="badge estado">${esc(state.estado || '(vacío)')}</span>
+         ${state.nie ? ' · N.I.E: ' + esc(state.nie) : ''}
+         ${state.fecha_resolucion ? ' · Resolución: ' + esc(state.fecha_resolucion) : ''}`
+      : '<span class="hint">no successful check yet</span>';
+    const errLine = m.last_error
+      ? `<div class="meta error">Last attempt: ${esc(m.last_error)}</div>` : '';
+    const queued = m.check_queued ? ' <span class="badge">check queued</span>' : '';
+    const subs = ` <span class="badge">🔔 ${m.subscribers}</span>`;
+    const tgBtn = telegramEnabled
+      ? `<button class="small secondary" data-action="tg-link" data-id="${m.id}"
+           data-label="${esc(m.label || m.expediente_id)}">Telegram link</button>` : '';
+    return `<div class="monitor">
+      <div>
+        <div><strong>${esc(m.label || m.expediente_id)}</strong>${subs}${queued}</div>
+        <div class="meta">Expediente <code>${esc(m.expediente_id)}</code>
+          · presented ${esc(m.fecha_presentacion)}</div>
+        <div style="margin-top:0.3rem">${stateLine}</div>
+        <div class="meta">Last checked: ${lastChecked}</div>
+        ${errLine}
+      </div>
+      <div style="display:flex; flex-direction:column; gap:0.4rem">
+        ${tgBtn}
+        <button class="small secondary" data-action="check" data-id="${m.id}"
+          ${m.check_queued ? 'disabled' : ''}>Check now</button>
+        <button class="small secondary" data-action="delete" data-id="${m.id}"
+          data-label="${esc(m.label || m.expediente_id)}">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+if (listEl) listEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'check') {
+    await fetch(`/api/monitors/${btn.dataset.id}/check-now`, { method: 'POST' });
+  } else if (btn.dataset.action === 'delete') {
+    if (!confirm(`Stop monitoring "${btn.dataset.label}"? This also removes all its alert subscriptions.`)) return;
+    await fetch(`/api/monitors/${btn.dataset.id}`, { method: 'DELETE' });
+  } else if (btn.dataset.action === 'tg-link') {
+    const resp = await fetch(`/api/monitors/${btn.dataset.id}/link-code`, { method: 'POST' });
+    const link = await resp.json();
+    if (resp.ok) showActivation(link, btn.dataset.label);
+    else alert(link.detail || 'Could not create a link');
+    return;
+  }
+  refresh();
+});
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  formStatus.hidden = false;
+  formStatus.className = 'status';
+  formStatus.textContent = 'Adding…';
+  try {
+    const resp = await fetch('/api/monitors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: form.label.value.trim(),
+        expediente_id: form.expediente_id.value.trim(),
+        fecha_presentacion: toDDMMYYYY(form.fecha_presentacion.value),
+        anio_nacimiento: String(form.anio_nacimiento.value).trim(),
+        invite_code: form.invite_code ? form.invite_code.value.trim() : '',
+        turnstile_token: turnstileToken(form),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to add monitor');
+    formStatus.className = 'status ok';
+    formStatus.textContent = '✅ Monitor added — first check queued.';
+    form.reset();
+    turnstileReset();
+    if (data.manage_url) {
+      const link = document.getElementById('manage-link');
+      link.href = data.manage_url;
+      link.textContent = location.origin + data.manage_url;
+      document.getElementById('manage-card').hidden = false;
+    }
+    if (data.telegram_link) {
+      showActivation(data.telegram_link, data.label || data.expediente_id);
+    }
+    refresh();
+  } catch (err) {
+    formStatus.className = 'status error';
+    formStatus.textContent = '❌ ' + err.message;
+  }
+});
+
+const cancelForm = document.getElementById('cancel-form');
+cancelForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById('cancel-status');
+  statusEl.hidden = false;
+  try {
+    const resp = await fetch('/api/subscriptions/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: document.getElementById('cancel-code').value.trim() }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed');
+    statusEl.className = 'status ok';
+    statusEl.textContent = '✅ Alerts cancelled.';
+    document.getElementById('cancel-code').value = '';
+    refresh();
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.textContent = '❌ ' + err.message;
+  }
+});
+
+// Prefill from a check done on the home page, if any.
+const last = sessionStorage.getItem('lastCheck');
+if (last) {
+  try {
+    const p = JSON.parse(last);
+    form.expediente_id.value = p.expediente_id || '';
+    const [d, m, y] = (p.fecha_presentacion || '').split('/');
+    if (y) form.fecha_presentacion.value = `${y}-${m}-${d}`;
+    form.anio_nacimiento.value = p.anio_nacimiento || '';
+  } catch {}
+}
+
+fetch('/api/telegram/status').then(r => r.json()).then(s => {
+  telegramEnabled = s.enabled && s.bot_username;
+  refresh();
+});
+setInterval(refresh, 15000);
+</script>
+{% endblock %}

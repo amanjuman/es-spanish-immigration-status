@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% set active = '' %}
+{% block title %}Manage monitor{% endblock %}
+{% block content %}
+<div class="card">
+  <h2 id="m-title">🔑 Your monitor</h2>
+  <p class="hint">This is your private management page — anyone with this URL
+    controls the monitor, so don't share the link (share Telegram activation
+    links instead).</p>
+  <div id="m-state"><p class="hint">Loading…</p></div>
+  <div style="display:flex; gap:0.6rem; flex-wrap:wrap; margin-top:1rem; align-items:flex-end">
+    <button class="small" id="btn-check">Check now</button>
+    <button class="small secondary" id="btn-pause"></button>
+    <button class="small secondary" id="btn-label">Edit label</button>
+    <button class="small secondary" id="btn-tg">Telegram link</button>
+    <button class="small secondary" id="btn-delete">Delete monitor</button>
+  </div>
+  <div style="display:flex; gap:0.6rem; align-items:flex-end; margin-top:1rem">
+    <div>
+      <label for="m-interval">Check frequency</label>
+      <select id="m-interval" style="padding:0.5rem 0.7rem; border:1px solid var(--border); border-radius:7px; background:var(--bg); color:var(--text)"></select>
+    </div>
+    <button class="small secondary" id="btn-interval" style="margin:0">Save</button>
+  </div>
+  <div id="m-status" class="status" hidden></div>
+</div>
+
+<div class="card" id="activation-card" hidden>
+  <h2>📲 Telegram activation link</h2>
+  <p style="text-align:center; margin:1rem 0">
+    <a id="activation-link" href="#" target="_blank" rel="noopener">
+      <img id="activation-qr" alt="Telegram activation QR" width="180" height="180"
+           style="display:block; margin:0 auto 0.8rem; border-radius:8px; background:#fff; padding:6px">
+    </a>
+    <a id="activation-link-text" href="#" target="_blank" rel="noopener"
+       style="font-size:1.05rem; font-weight:600"></a>
+  </p>
+  <p class="hint">One-time link, expires in 24 h. Share it with the person who
+    should receive alerts; they open it and press <b>Start</b>.</p>
+</div>
+
+<div class="card">
+  <h2>🔔 Subscribers</h2>
+  <div id="m-subs"><p class="hint">Loading…</p></div>
+</div>
+
+<div class="card">
+  <h2>📜 Recent checks</h2>
+  <div id="m-history" style="overflow-x:auto"><p class="hint">Loading…</p></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TOKEN = {{ manage_token | tojson }};
+const api = (path = '', opts = {}) =>
+  fetch(`/api/manage/${TOKEN}${path}`, opts).then(async r => {
+    const data = r.status === 204 ? {} : await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Request failed');
+    return data;
+  });
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+let current = null;
+
+function render(m) {
+  current = m;
+  document.getElementById('m-title').textContent =
+    '🔑 ' + (m.label || m.expediente_id);
+  const state = m.last_state || {};
+  const lastChecked = m.last_checked_at
+    ? new Date(m.last_checked_at).toLocaleString() : 'never';
+  const nextInterval = Math.round(m.effective_interval_seconds / 60);
+  document.getElementById('m-state').innerHTML = `
+    <table class="result"><tbody>
+      <tr><td>Expediente</td><td><code>${esc(m.expediente_id)}</code></td></tr>
+      <tr><td>Presented</td><td>${esc(m.fecha_presentacion)}</td></tr>
+      <tr><td>Estado de Resolución</td><td>${state.estado
+        ? '<span class="badge estado">' + esc(state.estado) + '</span>'
+        : '<span class="hint">no successful check yet</span>'}</td></tr>
+      <tr><td>N.I.E</td><td>${esc(state.nie) || '—'}</td></tr>
+      <tr><td>Fecha de Resolución</td><td>${esc(state.fecha_resolucion) || '—'}</td></tr>
+      <tr><td>Last checked</td><td>${lastChecked}${m.check_queued ? ' · <span class="badge">check queued</span>' : ''}</td></tr>
+      <tr><td>Monitoring</td><td>${m.paused
+        ? '⏸️ paused' : `▶️ active (re-checked ~every ${nextInterval} min)`}</td></tr>
+      ${m.last_error ? `<tr><td>Last attempt</td><td class="error">${esc(m.last_error)}</td></tr>` : ''}
+    </tbody></table>`;
+  document.getElementById('btn-pause').textContent =
+    m.paused ? 'Resume checks' : 'Pause checks';
+  renderIntervalSelect(m);
+
+  document.getElementById('m-subs').innerHTML = m.subscribers.length
+    ? m.subscribers.map(s => `<div class="monitor">
+        <div>${esc(s.name)} <span class="badge">${esc(s.channel)}</span>
+          <span class="meta"> since ${new Date(s.since).toLocaleDateString()}</span></div>
+        <button class="small secondary" data-sub="${s.id}">Remove</button>
+      </div>`).join('')
+    : '<p class="hint">Nobody subscribed yet — generate a Telegram link.</p>';
+
+  document.getElementById('m-history').innerHTML = m.history.length
+    ? `<table class="result"><tbody>` + m.history.map(h => `<tr>
+        <td>${new Date(h.checked_at).toLocaleString()}</td>
+        <td>${h.ok ? (esc(h.estado) || 'ok') : '<span class="error">failed</span>'}</td>
+      </tr>`).join('') + '</tbody></table>'
+    : '<p class="hint">No checks yet.</p>';
+}
+
+function note(text, cls = '') {
+  const el = document.getElementById('m-status');
+  el.hidden = false;
+  el.className = 'status ' + cls;
+  el.textContent = text;
+}
+
+function fmtSeconds(s) {
+  if (s % 86400 === 0) { const d = s / 86400; return d + ' day' + (d > 1 ? 's' : ''); }
+  if (s % 3600 === 0) { const h = s / 3600; return h + ' hour' + (h > 1 ? 's' : ''); }
+  return Math.round(s / 60) + ' min';
+}
+
+function renderIntervalSelect(m) {
+  const sel = document.getElementById('m-interval');
+  const cur = m.interval_seconds;  // null = follow default
+  const opts = [{ label: `Default (${fmtSeconds(m.base_interval_seconds)})`, value: 0 }];
+  for (const p of m.interval_presets) opts.push({ label: p.label, value: p.seconds });
+  if (cur && !m.interval_presets.some(p => p.seconds === cur)) {
+    opts.push({ label: fmtSeconds(cur) + ' (current)', value: cur });
+  }
+  sel.innerHTML = opts.map(o =>
+    `<option value="${o.value}" ${o.value === (cur || 0) ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
+}
+
+document.getElementById('btn-interval').addEventListener('click', async () => {
+  const seconds = parseInt(document.getElementById('m-interval').value, 10);
+  try {
+    await api('', { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: seconds }) });
+    note('✅ Check frequency updated.', 'ok');
+  } catch (e) { note('❌ ' + e.message, 'error'); }
+  refresh();
+});
+
+async function refresh() {
+  try { render(await api()); }
+  catch (e) { note('❌ ' + e.message, 'error'); }
+}
+
+document.getElementById('btn-check').addEventListener('click', async () => {
+  try { await api('/check-now', { method: 'POST' }); note('✅ Check queued.', 'ok'); }
+  catch (e) { note('❌ ' + e.message, 'error'); }
+  refresh();
+});
+
+document.getElementById('btn-pause').addEventListener('click', async () => {
+  try {
+    await api('', { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paused: !current.paused }) });
+  } catch (e) { note('❌ ' + e.message, 'error'); }
+  refresh();
+});
+
+document.getElementById('btn-label').addEventListener('click', async () => {
+  const label = prompt('New label:', current?.label || '');
+  if (label === null) return;
+  try {
+    await api('', { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }) });
+  } catch (e) { note('❌ ' + e.message, 'error'); }
+  refresh();
+});
+
+document.getElementById('btn-tg').addEventListener('click', async () => {
+  try {
+    const link = await api('/link-code', { method: 'POST' });
+    document.getElementById('activation-link').href = link.deep_link;
+    document.getElementById('activation-link-text').href = link.deep_link;
+    document.getElementById('activation-link-text').textContent = link.deep_link;
+    document.getElementById('activation-qr').src =
+      '/api/telegram/qr.png?code=' + encodeURIComponent(link.code);
+    const card = document.getElementById('activation-card');
+    card.hidden = false;
+    card.scrollIntoView({ behavior: 'smooth' });
+  } catch (e) { note('❌ ' + e.message, 'error'); }
+});
+
+document.getElementById('btn-delete').addEventListener('click', async () => {
+  if (!confirm('Delete this monitor and all its alert subscriptions? This cannot be undone.')) return;
+  try {
+    await api('', { method: 'DELETE' });
+    document.body.innerHTML = '<main><div class="card"><h2>Monitor deleted</h2>' +
+      '<p class="hint">All data for this expediente has been removed. ' +
+      '<a href="/">Back to the home page</a></p></div></main>';
+  } catch (e) { note('❌ ' + e.message, 'error'); }
+});
+
+document.getElementById('m-subs').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-sub]');
+  if (!btn) return;
+  if (!confirm('Remove this subscriber? They will stop receiving alerts.')) return;
+  try { await api(`/subscriptions/${btn.dataset.sub}`, { method: 'DELETE' }); }
+  catch (err) { note('❌ ' + err.message, 'error'); }
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+{% endblock %}
