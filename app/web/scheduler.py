@@ -130,6 +130,8 @@ def _purge_stale() -> None:
             db.delete_monitor(monitor["id"])
 
     db.purge_history_older_than(90)
+    if removed := _prune_debug_screenshots():
+        log.info("Pruned %d debug screenshots older than 7 days", removed)
 
 
 async def _handle_finished_job(job: Job) -> None:
@@ -141,6 +143,8 @@ async def _handle_finished_job(job: Job) -> None:
         db.add_history(expediente, ok=False, error=job.error or "unknown")
         if job.monitor_id is not None:
             db.update_monitor_result(job.monitor_id, state=None, error=job.error)
+            if job.error_code == "invalid_input":
+                await _pause_invalid_monitor(job)
         return
 
     result = job.result
@@ -192,6 +196,44 @@ async def _handle_finished_job(job: Job) -> None:
     if new_state["fecha_resolucion"]:
         db.set_monitor_resolved(job.monitor_id)
     db.update_monitor_result(job.monitor_id, state=new_state, error=None)
+
+
+async def _pause_invalid_monitor(job: Job) -> None:
+    """The portal rejected this monitor's details, so every future check would
+    fail too (and cost a captcha solve). Pause it and tell its subscribers how
+    to fix it."""
+    monitor = db.get_monitor(job.monitor_id)
+    if monitor is None or monitor["paused"]:
+        return
+    db.set_monitor_paused(job.monitor_id, True)
+    log.warning("Paused monitor %s (%s): portal rejected its details",
+                job.monitor_id, monitor["expediente_id"])
+    label = monitor["label"] or monitor["expediente_id"]
+    message = (
+        f"⚠️ <b>Monitoring paused</b>\n"
+        f"{label}\n"
+        f"Expediente: <code>{monitor['expediente_id']}</code>\n\n"
+        f"The portal rejected these details, so checks can't succeed:\n"
+        f"<i>{job.error}</i>\n\n"
+        f"Please delete this monitor and create a new one with the expediente / "
+        f"solicitud number from your application receipt (an N.I.E. won't work)."
+    )
+    for channel, address, _ in _recipients(monitor):
+        await notify.send(channel, address, message)
+
+
+def _prune_debug_screenshots(days: int = 7) -> int:
+    """Debug screenshots are written per job and never reused; keep a week."""
+    cutoff = datetime.now().timestamp() - days * 86400
+    removed = 0
+    for path in settings.debug_dir.glob("*.png"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _recipients(monitor: dict) -> list[tuple[str, str, str | None]]:

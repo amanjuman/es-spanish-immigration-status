@@ -19,6 +19,7 @@ from .models import (
     CaptchaExhaustedError,
     CheckRequest,
     CheckResult,
+    InvalidInputError,
     PageFlowError,
     WafBlockedError,
 )
@@ -192,6 +193,8 @@ class StatusChecker:
         # Keep attempts few and spaced out: hammering resubmissions quickly
         # escalates the F5 WAF into its own bot-challenge page (TSPD captcha),
         # which is worse than the site's normal image captcha and not solvable here.
+        last_failure = "captcha"   # what ended the most recent failed attempt
+        unexpected_streak = 0      # consecutive "unexpected page" outcomes
         for attempt in range(1, self.max_captcha_attempts + 1):
             if attempt > 1:
                 await asyncio.sleep(6)
@@ -243,15 +246,50 @@ class StatusChecker:
 
             if "caracteres escritos no son correctos" in html.lower():
                 log.info("Captcha '%s' rejected by server — retrying", captcha_text)
+                last_failure = "captcha"
+                unexpected_streak = 0
                 continue
 
-            if "datos personales" not in html.lower():
-                log.warning("Unexpected page state on attempt %d — retrying", attempt)
-                await self._debug_shot(page, debug_label, "unexpected")
-                await self._fill_form(page, request)
-                continue
+            if "datos personales" in html.lower():
+                await self._debug_shot(page, debug_label, "result")
+                return html
 
-            await self._debug_shot(page, debug_label, "result")
-            return html
+            # The portal rejected the details themselves (e.g. an N.I.E. typed
+            # into the expediente field). A new captcha can never fix that, so
+            # stop now instead of burning every remaining attempt.
+            if portal_msg := await self._visible_validation_error(page):
+                log.warning("Portal rejected the submitted details: %s", portal_msg)
+                await self._debug_shot(page, debug_label, "invalid")
+                raise InvalidInputError(portal_msg)
 
+            log.warning("Unexpected page state on attempt %d — retrying", attempt)
+            await self._debug_shot(page, debug_label, "unexpected")
+            last_failure = "unexpected"
+            unexpected_streak += 1
+            # An unexpected page is rarely fixed by a fresh captcha, and each
+            # retry costs a solve — give up after two in a row.
+            if unexpected_streak >= 2:
+                raise PageFlowError(
+                    "The portal returned an unexpected page after the form was "
+                    "submitted (this was not a captcha error). It may be "
+                    "temporarily unavailable, or its layout may have changed.")
+            await self._fill_form(page, request)
+
+        if last_failure == "unexpected":
+            raise PageFlowError(
+                "The portal returned an unexpected page after the form was "
+                "submitted (this was not a captcha error).")
         raise CaptchaExhaustedError(self.max_captcha_attempts)
+
+    @staticmethod
+    async def _visible_validation_error(page: Page) -> str | None:
+        """The portal's visible field-validation message, if it rejected the
+        submitted details. Checked by visibility (not raw HTML) so a hidden
+        error template on a normal page can't cause a false match."""
+        matches = page.get_by_text(re.compile(r"no es v[aá]lid", re.IGNORECASE))
+        for i in range(await matches.count()):
+            el = matches.nth(i)
+            if await el.is_visible():
+                text = " ".join((await el.inner_text()).split())
+                return text[:200]
+        return None

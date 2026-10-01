@@ -37,6 +37,7 @@ class Job:
     progress: str = "Waiting in queue…"
     result: CheckResult | None = None
     error: str | None = None
+    error_code: str | None = None  # CheckError.code, e.g. "invalid_input"
     created_at: datetime = field(default_factory=datetime.now)
     finished_at: datetime | None = None
 
@@ -155,6 +156,7 @@ class CheckQueue:
             except CheckError as e:
                 job.status = JobStatus.ERROR
                 job.error = str(e)
+                job.error_code = e.code
                 log.warning("Job %s failed: %s", job.id, e)
             except asyncio.CancelledError:
                 job.status = JobStatus.ERROR
