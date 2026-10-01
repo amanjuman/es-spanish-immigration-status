@@ -13,7 +13,8 @@ doing it daily. This app does the waiting for you.
 
 ## What it does
 
-- **Check now** — enter an expediente number, presentation date and birth
+- **Check now** — enter your N.I.E. *or* expediente / solicitud number (the
+  app picks the portal's matching lookup mode), presentation date and birth
   year in a simple web form; the app fetches the current status from
   [infoext2.delegaciondelgobierno.gob.es](https://infoext2.delegaciondelgobierno.gob.es/infoext2/)
   in 1–3 minutes and shows every field (Estado de Resolución, N.I.E.,

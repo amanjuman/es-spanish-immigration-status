@@ -6,9 +6,9 @@ from datetime import datetime
 EXPEDIENTE_RE = re.compile(r"^[A-Za-z0-9]{5,25}$")
 FECHA_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 ANIO_RE = re.compile(r"^(19|20)\d{2}$")
-# N.I.E. (foreigner ID): X/Y/Z + 7 digits + control letter. The portal's
-# expediente field rejects these ("El número de expediente introducido no es
-# válido"), so catch them up front instead of burning captchas.
+# N.I.E. (foreigner ID): X/Y/Z + 7 digits + control letter. The portal looks
+# these up in its "N.I.E." mode; anything else uses the expediente/solicitud
+# mode (an N.I.E. typed into the expediente field is rejected as invalid).
 NIE_RE = re.compile(r"^[XYZ]\d{7}[A-Z]$", re.IGNORECASE)
 
 
@@ -21,15 +21,17 @@ class CheckRequest:
     fecha_presentacion: str
     anio_nacimiento: str
 
+    @property
+    def lookup_mode(self) -> str:
+        """Portal form mode: 'N' = search by N.I.E., 'X' = by expediente /
+        solicitud number. Picked from the ID's format so users get one box."""
+        return "N" if NIE_RE.match(self.expediente_id) else "X"
+
     def validate(self) -> list[str]:
         errors = []
-        if NIE_RE.match(self.expediente_id):
-            errors.append(
-                "That looks like an N.I.E., which the portal doesn't accept here. "
-                "Enter the expediente / solicitud number from your application "
-                "receipt instead (e.g. E28… or a 15-digit number).")
-        elif not EXPEDIENTE_RE.match(self.expediente_id):
-            errors.append("Expediente id must be 5-25 letters/digits.")
+        if not EXPEDIENTE_RE.match(self.expediente_id):
+            errors.append("Enter an N.I.E. or an expediente / solicitud number "
+                          "(5-25 letters/digits).")
         if not FECHA_RE.match(self.fecha_presentacion):
             errors.append("Fecha de presentación must be DD/MM/YYYY.")
         else:
@@ -115,7 +117,6 @@ class InvalidInputError(CheckError):
         self.portal_message = portal_message
         super().__init__(
             f'The portal rejected these details: "{portal_message}". '
-            "Check the expediente / solicitud number, presentation date and "
-            "birth year. An N.I.E. can't be used here — use the number from "
-            "your application receipt."
+            "Check the N.I.E. or expediente / solicitud number, presentation "
+            "date and birth year against your application receipt."
         )

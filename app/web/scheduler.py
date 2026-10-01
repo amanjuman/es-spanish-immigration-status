@@ -215,8 +215,8 @@ async def _pause_invalid_monitor(job: Job) -> None:
         f"Expediente: <code>{monitor['expediente_id']}</code>\n\n"
         f"The portal rejected these details, so checks can't succeed:\n"
         f"<i>{job.error}</i>\n\n"
-        f"Please delete this monitor and create a new one with the expediente / "
-        f"solicitud number from your application receipt (an N.I.E. won't work)."
+        f"Please delete this monitor and create a new one with the details "
+        f"exactly as they appear on your application receipt."
     )
     for channel, address, _ in _recipients(monitor):
         await notify.send(channel, address, message)

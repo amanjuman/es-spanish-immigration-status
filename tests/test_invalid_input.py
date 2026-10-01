@@ -81,6 +81,65 @@ def test_normal_form_not_detected():
     assert _detect(NORMAL_FORM_PAGE) is None
 
 
+# ── Lookup mode: _fill_form picks the right portal field ──────────
+
+# Mirrors the portal form: two ID rows toggled by its own cambiaExpte()
+# (copied verbatim, minus jQuery), and the hidden "modo" field it sets.
+PORTAL_FORM = """<html><body><form>
+  <input type="hidden" id="modo" name="modo" value="N">
+  <div id="rowNie"><input type="text" id="nie" name="nie"></div>
+  <div id="rowExpte" style="display:none">
+    <input type="text" id="idExpediente" name="idExpediente"></div>
+  <input type="text" id="fechaPresentacion" name="fechaPresentacion">
+  <input type="text" id="anio" name="anio">
+</form>
+<script>
+function cambiaExpte(modo) {
+  if ("X" == modo) { rowExpte.style.display = ""; rowNie.style.display = "none"; }
+  if ("N" == modo) { rowExpte.style.display = "none"; rowNie.style.display = ""; }
+  document.getElementById("modo").value = modo;
+}
+</script></body></html>"""
+
+
+def _fill(expediente_id: str) -> dict:
+    from playwright.async_api import async_playwright
+
+    async def no_datepicker(self, page, fecha):  # datepicker widget not under test
+        return None
+
+    async def run():
+        checker = StatusChecker(base_url="", solver=None)
+        checker._set_fecha = no_datepicker.__get__(checker)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            try:
+                page = await browser.new_page()
+                await page.set_content(PORTAL_FORM)
+                await checker._fill_form(page, CheckRequest(expediente_id, "01/05/2026", "1990"))
+                return await page.evaluate("""() => ({
+                    modo: document.getElementById('modo').value,
+                    nie: document.getElementById('nie').value,
+                    idExpediente: document.getElementById('idExpediente').value,
+                    anio: document.getElementById('anio').value})""")
+            finally:
+                await browser.close()
+
+    return asyncio.run(run())
+
+
+@needs_chromium
+def test_nie_fills_nie_field_in_n_mode():
+    assert _fill("Z1234567X") == {
+        "modo": "N", "nie": "Z1234567X", "idExpediente": "", "anio": "1990"}
+
+
+@needs_chromium
+def test_expediente_fills_expediente_field_in_x_mode():
+    assert _fill("E28202600000001") == {
+        "modo": "X", "nie": "", "idExpediente": "E28202600000001", "anio": "1990"}
+
+
 # ── Error typing ───────────────────────────────────────────────────
 
 def test_invalid_input_error_code_and_message():

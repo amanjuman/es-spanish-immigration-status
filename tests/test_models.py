@@ -15,15 +15,18 @@ def test_valid_request_passes():
     assert valid_request().validate() == []
 
 
-def test_nie_rejected_with_helpful_message():
+def test_nie_accepted_and_uses_nie_mode():
     for nie in ("Z1234567X", "x1234567l", "Y7654321B"):
-        errors = valid_request(expediente_id=nie).validate()
-        assert len(errors) == 1 and "N.I.E" in errors[0]
+        req = valid_request(expediente_id=nie)
+        assert req.validate() == []
+        assert req.lookup_mode == "N"
 
 
-def test_real_expediente_formats_still_accepted():
+def test_expediente_formats_use_expediente_mode():
     for exp in ("E28202600000001", "I28202600000002", "287020260000003"):
-        assert valid_request(expediente_id=exp).validate() == []
+        req = valid_request(expediente_id=exp)
+        assert req.validate() == []
+        assert req.lookup_mode == "X"
 
 
 def test_bad_expediente():

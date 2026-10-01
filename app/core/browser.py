@@ -99,10 +99,16 @@ class StatusChecker:
                 log.exception("debug screenshot failed")
 
     async def _fill_form(self, page: Page, request: CheckRequest) -> None:
-        # cambiaExpte('X') switches the form into expediente-number search mode.
-        await page.evaluate("cambiaExpte('X')")
+        # The form has two lookup modes; cambiaExpte(m) shows the matching row
+        # and sets the hidden "modo" field: 'N' = by N.I.E. (the portal's
+        # default, input "nie"), 'X' = by expediente/solicitud number (input
+        # "idExpediente"). Always set it explicitly — recargarCaptcha() reloads
+        # the whole form back to its default.
+        mode = request.lookup_mode
+        await page.evaluate(f"cambiaExpte('{mode}')")
         await asyncio.sleep(1)
-        await page.fill("input[name='idExpediente']", request.expediente_id)
+        field = "nie" if mode == "N" else "idExpediente"
+        await page.fill(f"input[name='{field}']", request.expediente_id)
         await self._set_fecha(page, request.fecha_presentacion)
         await page.fill("input[name='anio']", request.anio_nacimiento)
 
@@ -254,8 +260,8 @@ class StatusChecker:
                 await self._debug_shot(page, debug_label, "result")
                 return html
 
-            # The portal rejected the details themselves (e.g. an N.I.E. typed
-            # into the expediente field). A new captcha can never fix that, so
+            # The portal rejected the details themselves (e.g. a malformed or
+            # unknown ID). A new captcha can never fix that, so
             # stop now instead of burning every remaining attempt.
             if portal_msg := await self._visible_validation_error(page):
                 log.warning("Portal rejected the submitted details: %s", portal_msg)
